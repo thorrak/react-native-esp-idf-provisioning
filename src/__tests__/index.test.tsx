@@ -1,13 +1,20 @@
 const mockCreateESPDevice = jest.fn().mockResolvedValue({});
 const mockConnect = jest.fn().mockResolvedValue({ status: 'connected' });
 const mockSendData = jest.fn();
+const mockDisconnect = jest.fn();
+const mockRemove = jest.fn();
+const mockAddListener = jest.fn().mockReturnValue({ remove: mockRemove });
 
 jest.mock('react-native', () => ({
+  NativeEventEmitter: jest
+    .fn()
+    .mockImplementation(() => ({ addListener: mockAddListener })),
   NativeModules: {
     EspIdfProvisioning: {
       createESPDevice: mockCreateESPDevice,
       connect: mockConnect,
       sendData: mockSendData,
+      disconnect: mockDisconnect,
     },
   },
   Platform: {
@@ -113,9 +120,104 @@ describe('ESPDevice.sendData', () => {
       security: ESPSecurity.secure2,
     });
 
-    await expect(device.sendData('/custom-endpoint', '{"foo":"bar"}')).rejects
-      .toThrow(
-        'Request to send data to device failed: Write to BLE failed. Custom endpoint requests require an active provisioning session; if this happens after provision(), the device firmware may have already closed the session or disconnected the transport.'
-      );
+    await expect(
+      device.sendData('/custom-endpoint', '{"foo":"bar"}')
+    ).rejects.toThrow(
+      'Request to send data to device failed: Write to BLE failed. Custom endpoint requests require an active provisioning session; if this happens after provision(), the device firmware may have already closed the session or disconnected the transport.'
+    );
+  });
+});
+
+describe('connection cancellation', () => {
+  beforeEach(() => {
+    mockConnect.mockClear();
+    mockDisconnect.mockClear();
+  });
+
+  it('does not connect if cancellation happens during native device discovery', async () => {
+    const { ESPDevice, ESPSecurity, ESPTransport } = require('../index');
+    let finishDiscovery!: (value: object) => void;
+    mockCreateESPDevice.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishDiscovery = resolve;
+        })
+    );
+    const device = new ESPDevice({
+      name: 'TiltBridge_1',
+      transport: ESPTransport.ble,
+      security: ESPSecurity.secure,
+    });
+    const pending = device.connect('pop');
+    device.disconnect();
+    finishDiscovery({});
+    await expect(pending).rejects.toMatchObject({
+      code: 'operation_cancelled',
+    });
+    expect(mockDisconnect).toHaveBeenCalledWith('TiltBridge_1');
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it('does not report success from a cancelled native handshake', async () => {
+    const { ESPDevice, ESPSecurity, ESPTransport } = require('../index');
+    let finishConnect!: (value: object) => void;
+    mockConnect.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishConnect = resolve;
+        })
+    );
+    const device = new ESPDevice({
+      name: 'TiltBridge_2',
+      transport: ESPTransport.ble,
+      security: ESPSecurity.secure,
+    });
+    const pending = device.connect('pop');
+    await Promise.resolve();
+    device.disconnect();
+    finishConnect({ status: 'connected' });
+    await expect(pending).rejects.toMatchObject({
+      code: 'operation_cancelled',
+    });
+  });
+
+  it('preserves a structured session failure without calling it bad credentials', async () => {
+    const { ESPDevice, ESPSecurity, ESPTransport } = require('../index');
+    mockConnect.mockRejectedValueOnce(
+      Object.assign(new Error('Failed to initialise session with the device'), {
+        code: 'session_init_failed',
+      })
+    );
+    const device = new ESPDevice({
+      name: 'TiltBridge_3',
+      transport: ESPTransport.ble,
+      security: ESPSecurity.secure,
+    });
+    await expect(device.connect('pop')).rejects.toMatchObject({
+      code: 'session_init_failed',
+    });
+  });
+});
+
+describe('device disconnection events', () => {
+  it('subscribes to the native event with device identity and returns cleanup', () => {
+    const { addDeviceDisconnectListener } = require('../index');
+    const listener = jest.fn();
+    const unsubscribe = addDeviceDisconnectListener(listener);
+    expect(mockAddListener).toHaveBeenCalledWith(
+      'EspIdfProvisioningDeviceDisconnected',
+      listener
+    );
+    const nativeListener = mockAddListener.mock.calls.at(-1)[1];
+    nativeListener({
+      deviceName: 'TiltBridge_1',
+      reason: 'Device disconnected.',
+    });
+    expect(listener).toHaveBeenCalledWith({
+      deviceName: 'TiltBridge_1',
+      reason: 'Device disconnected.',
+    });
+    unsubscribe();
+    expect(mockRemove).toHaveBeenCalled();
   });
 });

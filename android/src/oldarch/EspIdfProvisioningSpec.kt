@@ -5,6 +5,8 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 
 abstract class EspIdfProvisioningSpec(context: ReactApplicationContext?) : ReactContextBaseJavaModule(context) {
+    abstract fun addListener(eventName: String)
+    abstract fun removeListeners(count: Double)
     abstract fun searchESPDevices(devicePrefix: String, transport: String, security: Double, promise: Promise?)
     abstract fun stopESPDevicesSearch()
     abstract fun createESPDevice(deviceName: String, transport: String, security: Double, proofOfPossession: String?, softAPPassword: String?, username: String?, promise: Promise?)

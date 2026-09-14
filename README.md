@@ -209,3 +209,41 @@ MIT
 ---
 
 Made with [create-react-native-library](https://github.com/callstack/react-native-builder-bob)
+
+### Connection recovery on iOS
+
+Subscribe before connecting if the UI needs to react when a device loses its
+Bluetooth connection:
+
+```ts
+import { addDeviceDisconnectListener } from '@orbital-systems/react-native-esp-idf-provisioning';
+
+const unsubscribe = addDeviceDisconnectListener(({ deviceName, reason }) => {
+  // Match deviceName to the device shown in your UI, then offer reconnection.
+});
+
+// Call this when the owning screen/service is disposed.
+unsubscribe();
+```
+
+Events identify the device whose established session disconnected. Explicit
+`device.disconnect()` and replacement of a connection do not emit this event.
+Late callbacks from a replaced device are ignored. On Android, the Espressif SDK
+broadcast does not identify its source device, so this listener currently emits
+no events; continue handling failed operations and timeouts on both platforms.
+
+On iOS, `disconnect()` also cancels a pending discovery or handshake for that
+device and settles its outstanding operations. Discovery and connection have
+native deadlines (10 and 30 seconds respectively). Bluetooth denial, Bluetooth
+off, and unsupported Bluetooth reject with `error.code` values
+`bluetooth_unauthorized`, `bluetooth_powered_off`, and `bluetooth_unavailable`.
+Terminal Wi-Fi scan errors reject with `scan_failed` after the SDK's retry.
+
+Session setup failures use `session_init_failed`, `security_mismatch`,
+`missing_pop`, or `missing_username` when those reasons are known. In particular,
+`session_init_failed` means the encrypted session could not be established; the
+iOS SDK does not preserve enough detail to conclude that the supplied proof of
+possession was wrong. Offer another attempt without asserting that credentials
+are invalid. Cancellation/transport failures use `scan_cancelled`,
+`operation_cancelled`, `device_disconnected`, `connect_timeout`, or
+`operation_timeout`. Existing promise return values remain unchanged.

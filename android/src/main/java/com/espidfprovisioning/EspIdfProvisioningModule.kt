@@ -61,6 +61,12 @@ private class GuardedPromise(private val promise: Promise?) {
       promise?.reject(throwable)
     }
   }
+
+  fun reject(code: String, message: String) {
+    if (settled.compareAndSet(false, true)) {
+      promise?.reject(code, message)
+    }
+  }
 }
 
 @OptIn(kotlin.ExperimentalStdlibApi::class)
@@ -69,13 +75,21 @@ class EspIdfProvisioningModule internal constructor(context: ReactApplicationCon
     return NAME
   }
 
+  // Required by NativeEventEmitter. Android SDK disconnect broadcasts have no
+  // device identity, so this module intentionally does not forward them.
+  @ReactMethod
+  override fun addListener(eventName: String) {}
+
+  @ReactMethod
+  override fun removeListeners(count: Double) {}
+
   companion object {
       const val NAME = "EspIdfProvisioning"
   }
 
   private val espProvisionManager = ESPProvisionManager.getInstance(context)
   private val espDevices = HashMap<String, ESPDevice>()
-  private val bluetoothAdapter = (context?.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+  private val bluetoothAdapter = (context?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
   private val mainHandler = Handler(Looper.getMainLooper())
   private val connectLock = Any()
@@ -164,6 +178,28 @@ class EspIdfProvisioningModule internal constructor(context: ReactApplicationCon
     return ContextCompat.checkSelfPermission(reactApplicationContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
   }
 
+  @SuppressLint("MissingPermission")
+  private fun rejectIfBluetoothUnavailable(promise: GuardedPromise): Boolean {
+    val adapter = bluetoothAdapter
+    if (adapter == null || !reactApplicationContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
+      promise.reject("bluetooth_unavailable", "Bluetooth LE is not supported on this device.")
+      return true
+    }
+
+    try {
+      if (!adapter.isEnabled) {
+        promise.reject("bluetooth_powered_off", "Bluetooth is turned off.")
+        return true
+      }
+    } catch (e: SecurityException) {
+      // Permission can be revoked between the preflight and SDK callback.
+      promise.reject("bluetooth_unauthorized", "Bluetooth permission is denied. Enable it in Settings.")
+      return true
+    }
+
+    return false
+  }
+
   private fun isSecureSecurityType(securityType: ESPConstants.SecurityType): Boolean {
     return securityType != ESPConstants.SecurityType.SECURITY_0
   }
@@ -221,10 +257,13 @@ class EspIdfProvisioningModule internal constructor(context: ReactApplicationCon
         safePromise.reject(Error("Missing one of the following permissions: BLUETOOTH, BLUETOOTH_ADMIN, BLUETOOTH_CONNECT, BLUETOOTH_SCAN, ACCESS_FINE_LOCATION"))
         return
       }
+      if (rejectIfBluetoothUnavailable(safePromise)) return
 
       espProvisionManager.searchBleEspDevices(devicePrefix, object : BleScanListener {
         override fun scanStartFailed() {
-          safePromise.reject(Error("Scan could not be started."))
+          if (!rejectIfBluetoothUnavailable(safePromise)) {
+            safePromise.reject(Error("Scan could not be started."))
+          }
         }
 
         override fun onPeripheralFound(device: BluetoothDevice?, scanResult: ScanResult?) {
@@ -384,7 +423,7 @@ class EspIdfProvisioningModule internal constructor(context: ReactApplicationCon
 
       // If the bluetooth device does not exist, try using the bonded one (if it exists)
       if (espDevice?.bluetoothDevice == null) {
-        espDevice?.bluetoothDevice = bluetoothAdapter.bondedDevices.find { bondedDevice ->
+        espDevice?.bluetoothDevice = bluetoothAdapter?.bondedDevices?.find { bondedDevice ->
           bondedDevice.name == deviceName
         }
       }

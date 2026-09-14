@@ -1,4 +1,4 @@
-import { NativeModules, Platform } from 'react-native';
+import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
 import { Buffer } from 'buffer';
 import { ESPSecurity, ESPTransport } from './types';
 import type {
@@ -31,6 +31,32 @@ const EspIdfProvisioning = EspIdfProvisioningModule
       }
     );
 
+export interface DeviceDisconnectEvent {
+  deviceName: string;
+  reason?: string;
+}
+
+/**
+ * Observe a device's Bluetooth disconnection on iOS. The native SDK's Android
+ * disconnect broadcast has no source identity, so Android does not emit this
+ * event; callers must also handle operation errors/timeouts on that platform.
+ */
+export function addDeviceDisconnectListener(
+  listener: (event: DeviceDisconnectEvent) => void
+): () => void {
+  const subscription = new NativeEventEmitter(EspIdfProvisioning).addListener(
+    'EspIdfProvisioningDeviceDisconnected',
+    listener
+  );
+  return () => subscription.remove();
+}
+
+function cancelledConnection(): Error & { code: string } {
+  return Object.assign(new Error('Device connection was cancelled.'), {
+    code: 'operation_cancelled',
+  });
+}
+
 function normalizeProofOfPossession(
   security: ESPSecurity,
   proofOfPossession: string | null | undefined
@@ -49,6 +75,7 @@ export class ESPDevice implements ESPDeviceInterface {
   name: string;
   transport: ESPTransport;
   security: ESPSecurity;
+  private connectionAttempt = 0;
 
   /**
    * Create a new ESPDevice instance.
@@ -82,6 +109,7 @@ export class ESPDevice implements ESPDeviceInterface {
     softAPPassword: string | null = null,
     username: string | null = null
   ): Promise<void> {
+    const attempt = ++this.connectionAttempt;
     const normalizedProofOfPossession = normalizeProofOfPossession(
       this.security,
       proofOfPossession
@@ -110,7 +138,9 @@ export class ESPDevice implements ESPDeviceInterface {
       username
     );
 
+    if (attempt !== this.connectionAttempt) throw cancelledConnection();
     const response = await EspIdfProvisioning.connect(this.name);
+    if (attempt !== this.connectionAttempt) throw cancelledConnection();
 
     return response;
   }
@@ -154,6 +184,7 @@ export class ESPDevice implements ESPDeviceInterface {
    * Disconnect from the device.
    */
   disconnect(): void {
+    this.connectionAttempt++;
     return EspIdfProvisioning.disconnect(this.name);
   }
 
