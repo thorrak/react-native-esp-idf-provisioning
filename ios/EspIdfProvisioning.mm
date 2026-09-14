@@ -4,7 +4,9 @@
 #import <React/RCTBridgeModule.h>
 #endif
 
-@interface RCT_EXTERN_MODULE(EspIdfProvisioning, NSObject)
+#import <React/RCTEventEmitter.h>
+
+@interface RCT_EXTERN_MODULE(EspIdfProvisioning, RCTEventEmitter)
     RCT_EXTERN_METHOD(searchESPDevices:(NSString *)devicePrefix
                       transport:(NSString *)location
                       security:(NSInteger)security
@@ -100,6 +102,10 @@
     RCT_EXTERN_METHOD(getDeviceCapabilities:(NSString *)deviceName
                       resolve:(RCTPromiseResolveBlock)resolve
                       reject:(RCTPromiseRejectBlock)reject)
+
+    - (dispatch_queue_t)methodQueue {
+      return dispatch_get_main_queue();
+    }
 
     + (BOOL) requiresMainQueueSetup {
       return YES;

@@ -25,6 +25,8 @@ export interface ESPStatusResponse {
 }
 
 export interface Spec extends TurboModule {
+  addListener(eventName: string): void;
+  removeListeners(count: number): void;
   searchESPDevices(
     devicePrefix: string,
     transport: string,
